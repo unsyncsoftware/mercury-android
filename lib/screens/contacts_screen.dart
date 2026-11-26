@@ -11,6 +11,7 @@ import '../models/contact.dart';
 import '../services/identity_service.dart';
 import '../services/signaling_service.dart';
 import '../services/relay_service.dart';
+import '../services/incoming_message.dart';
 import '../services/contacts_service.dart';
 import '../services/messages_service.dart';
 import '../services/signal_service.dart';
@@ -24,6 +25,12 @@ import '../services/biometric_service.dart';
 import '../services/profile_photo_service.dart';
 import '../services/startup_latency.dart';
 import '../services/call_log_store.dart';
+import '../services/backup_controller.dart';
+import '../services/handle_service.dart';
+import 'backup_screen.dart';
+import 'choose_handle_screen.dart';
+import 'community_screen.dart';
+import 'notes_screen.dart';
 import 'qr_screen.dart';
 import 'call_screen.dart';
 import 'incoming_call_screen.dart';
@@ -104,6 +111,93 @@ class _ContactsScreenState extends State<ContactsScreen>
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
     _loadProfilePhoto();
     _connect();
+    unawaited(BackupController.runIfDue());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _offerBackupOnce());
+  }
+
+  bool _handleChecked = false;
+
+  /// Once per app start: learn this device's handle from the server, or ask
+  /// the user to choose one. An older server without handles is left alone.
+  Future<void> _checkHandleOnce() async {
+    if (_handleChecked) return;
+    _handleChecked = true;
+    final status = await _signaling.fetchHandle();
+    if (!status.supported || !mounted) return;
+    if (status.handle != null) {
+      // The handle is the only name; keep the shown name in step with it.
+      if (_identity.displayName != HandleService.display(status.handle!)) {
+        await HandleService.adopt(status.handle!, _identity.setDisplayName);
+        _signaling.updateHandle(HandleService.display(status.handle!));
+        if (mounted) setState(() {});
+      } else {
+        await HandleService.save(status.handle!);
+      }
+      return;
+    }
+    await _openChooseHandle(allowLater: true);
+  }
+
+  /// Lets the user claim a handle; on success it becomes the shown name.
+  Future<void> _openChooseHandle({required bool allowLater}) async {
+    final saved = await HandleService.savedHandle();
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => ChooseHandleScreen(
+          initial: saved ?? HandleService.suggestFrom(_identity.displayName ?? ''),
+          claim: (h) => _signaling.claimHandle(h),
+          onDone: (h) async {
+            await HandleService.adopt(h, _identity.setDisplayName);
+            _signaling.updateHandle(HandleService.display(h));
+            if (mounted) setState(() {});
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          onLater: allowLater ? () => Navigator.pop(ctx) : null,
+        ),
+      ),
+    );
+  }
+
+  /// One-time nudge to set up account backup. Shown once, then never again.
+  Future<void> _offerBackupOnce() async {
+    final store = BackupController.store;
+    if (await store.readPref('backup_prompt_seen') == 'true') return;
+    final status = await (await BackupController.autoBackup()).status();
+    if (status.enabled) return;
+    await store.writePref('backup_prompt_seen', 'true');
+    if (!mounted) return;
+    final setUp = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kSurface,
+        title: const Text('Protect your account',
+            style: TextStyle(color: kText)),
+        content: const Text(
+          'If you reinstall or lose this device, your handle and contacts are '
+          'gone unless you have a backup. Set up automatic backup now? It '
+          'takes a minute and you only do it once.',
+          style: TextStyle(color: kMuted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Later', style: TextStyle(color: kMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Set up backup'),
+          ),
+        ],
+      ),
+    );
+    if (setUp == true && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const BackupScreen()),
+      );
+    }
   }
 
   @override
@@ -112,12 +206,22 @@ class _ContactsScreenState extends State<ContactsScreen>
     if (state == AppLifecycleState.resumed) {
       _drainPendingCallRoute();
       _clearStaleIncomingCallNotificationIfIdle();
+    } else {
+      // Leaving the app is a good moment to refresh the account backup.
+      unawaited(BackupController.runIfDue());
     }
   }
 
   Future<void> _loadProfilePhoto() async {
     final path = await _profilePhotoService.loadProfilePhotoPath();
     if (mounted) setState(() => _profilePhotoPath = path);
+  }
+
+  /// Saves a photo received in a profile message, but only for saved contacts.
+  Future<void> _saveContactProfilePhoto(String peerId, Uint8List photo) async {
+    if (!_realContacts.any((c) => c.peerId == peerId)) return;
+    await _contactsService.saveContactPhoto(peerId, photo);
+    await _reloadContacts();
   }
 
   Future<void> _reloadContacts() async {
@@ -399,8 +503,15 @@ class _ContactsScreenState extends State<ContactsScreen>
                   await _signalService.initializeSession(pid, bundle),
               messagesService: _messagesService,
               newMessageNotifier: _newMessageNotifier,
-              onMessageSaved: (text, isSent) =>
-                  _messagesService.addMessage(contact.id, text, isSent),
+              profilePhotoPath: _profilePhotoPath,
+              onMessageSaved: (text, isSent, {imagePath, caption}) =>
+                  _messagesService.addMessage(
+                    contact.id,
+                    text,
+                    isSent,
+                    imagePath: imagePath,
+                    caption: caption,
+                  ),
               onEncrypt: (text) async {
                 if (_signalService.isInitialized) {
                   return await _signalService.encrypt(contact.id, text);
@@ -428,6 +539,7 @@ class _ContactsScreenState extends State<ContactsScreen>
         FCMService.setSignalingConnected(connected);
         _connectionNotifier.value = connected;
         if (mounted) setState(() => _connected = connected);
+        if (connected) unawaited(_checkHandleOnce());
       };
 
       _signaling.onPeerOffline = (peerId) {
@@ -550,7 +662,13 @@ class _ContactsScreenState extends State<ContactsScreen>
             print('Relay decrypt error: $e');
           }
         }
-        await _messagesService.addMessage(from, text, false);
+        final preview = await storeIncomingMessage(
+          _messagesService,
+          from,
+          text,
+          onProfile: _saveContactProfilePhoto,
+        );
+        if (preview == null) return; // a profile photo, not a chat message
         print(
           'Relay queued message from=$from notifier=$from:${DateTime.now().millisecondsSinceEpoch}',
         );
@@ -571,7 +689,7 @@ class _ContactsScreenState extends State<ContactsScreen>
         if (_openChatPeerId != from) {
           MessageNotificationService.showMessageNotification(
             senderName,
-            text,
+            preview,
             peerId: from,
           );
         }
@@ -628,6 +746,13 @@ class _ContactsScreenState extends State<ContactsScreen>
           if (parsed['type'] == 'handshake') {
             final name = parsed['name'] as String;
             final hid = parsed['peerId'] as String;
+            if (!PairingWindowService.mayAcceptHandshake(
+              senderId: peerId,
+              claimedId: hid,
+              isSavedContact: _realContacts.any((c) => c.peerId == peerId),
+            )) {
+              return;
+            }
             await _contactsService.addContact(hid, name);
             final photoBase64 = parsed['photoBase64'];
             if (photoBase64 is String && photoBase64.isNotEmpty) {
@@ -684,7 +809,13 @@ class _ContactsScreenState extends State<ContactsScreen>
             print('Decrypt error: $e');
           }
         }
-        _messagesService.addMessage(peerId, plaintext, false).then((_) {
+        storeIncomingMessage(
+          _messagesService,
+          peerId,
+          plaintext,
+          onProfile: _saveContactProfilePhoto,
+        ).then((preview) {
+          if (preview == null) return; // a profile photo, not a chat message
           if (mounted) {
             print(
               'P2P message peerId=$peerId notifier=$peerId:${DateTime.now().millisecondsSinceEpoch}',
@@ -707,7 +838,7 @@ class _ContactsScreenState extends State<ContactsScreen>
               if (_openChatPeerId != peerId) {
                 MessageNotificationService.showMessageNotification(
                   senderName,
-                  plaintext,
+                  preview,
                   peerId: peerId,
                 );
               }
@@ -881,14 +1012,13 @@ class _ContactsScreenState extends State<ContactsScreen>
   }
 
   void _showSettings(BuildContext context) {
-    final controller = TextEditingController(text: _identity.displayName ?? '');
     showModalBottomSheet(
       context: context,
       backgroundColor: kSurface,
       isScrollControlled: true,
       builder: (_) => _SettingsSheet(
-        controller: controller,
         identity: _identity,
+        onChangeHandle: () => _openChooseHandle(allowLater: true),
         profilePhotoPath: _profilePhotoPath,
         onProfilePhotoChanged: (path) {
           if (mounted) setState(() => _profilePhotoPath = path);
@@ -998,6 +1128,29 @@ class _ContactsScreenState extends State<ContactsScreen>
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Community',
+            icon: const Icon(Icons.forum_outlined, color: kMuted),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => CommunityScreen(
+                  relay: _relayService,
+                  peerId: _identity.peerId ?? '',
+                  mercuryHandle: _identity.displayName ?? '',
+                  profilePhotoPath: _profilePhotoPath,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Notes',
+            icon: const Icon(Icons.note_alt_outlined, color: kMuted),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const NotesScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.qr_code_scanner_outlined, color: kMuted),
             onPressed: () => _openQR(context),
@@ -1150,8 +1303,15 @@ class _ContactsScreenState extends State<ContactsScreen>
                               ),
                           messagesService: _messagesService,
                           newMessageNotifier: _newMessageNotifier,
-                          onMessageSaved: (text, isSent) => _messagesService
-                              .addMessage(contact.id, text, isSent),
+                          profilePhotoPath: _profilePhotoPath,
+                          onMessageSaved: (text, isSent, {imagePath, caption}) =>
+                              _messagesService.addMessage(
+                                contact.id,
+                                text,
+                                isSent,
+                                imagePath: imagePath,
+                                caption: caption,
+                              ),
                           onEncrypt: (text) async {
                             if (_signalService.isInitialized) {
                               return await _signalService.encrypt(
@@ -1350,13 +1510,13 @@ class _ContactTile extends StatelessWidget {
 
 // ── Settings Sheet ────────────────────────────────────────────────────────────
 class _SettingsSheet extends StatefulWidget {
-  final TextEditingController controller;
   final dynamic identity;
+  final VoidCallback onChangeHandle;
   final String? profilePhotoPath;
   final ValueChanged<String?> onProfilePhotoChanged;
   const _SettingsSheet({
-    required this.controller,
     required this.identity,
+    required this.onChangeHandle,
     required this.profilePhotoPath,
     required this.onProfilePhotoChanged,
   });
@@ -1367,6 +1527,7 @@ class _SettingsSheet extends StatefulWidget {
 
 class _SettingsSheetState extends State<_SettingsSheet> {
   final _profilePhotoService = ProfilePhotoService();
+  String? _handle;
   bool _bioAvailable = false;
   bool _bioEnabled = false;
   String? _profilePhotoPath;
@@ -1376,6 +1537,9 @@ class _SettingsSheetState extends State<_SettingsSheet> {
     super.initState();
     _profilePhotoPath = widget.profilePhotoPath;
     _loadBio();
+    HandleService.savedHandle().then((h) {
+      if (mounted) setState(() => _handle = h);
+    });
   }
 
   Future<void> _loadBio() async {
@@ -1469,42 +1633,28 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           ),
           const SizedBox(height: 16),
           Center(child: _buildProfilePhoto()),
-          const SizedBox(height: 16),
-          const Text(
-            'Display name',
-            style: TextStyle(color: kMuted, fontSize: 12),
-          ),
           const SizedBox(height: 8),
-          TextField(
-            controller: widget.controller,
-            style: const TextStyle(color: kText),
-            decoration: const InputDecoration(
-              enabledBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: kBorder),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: kAccent),
-              ),
+          Center(
+            child: Text(
+              _handle != null
+                  ? HandleService.display(_handle!)
+                  : (widget.identity.displayName as String? ?? ''),
+              style: const TextStyle(color: kText, fontSize: 16, fontWeight: FontWeight.w600),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
             child: TextButton(
-              onPressed: () async {
-                final name = widget.controller.text.trim();
-                if (name.isNotEmpty) {
-                  await widget.identity.setDisplayName(name);
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Display name updated!')),
-                    );
-                  }
-                }
+              onPressed: () {
+                Navigator.pop(context);
+                widget.onChangeHandle();
               },
               style: TextButton.styleFrom(backgroundColor: kAccent),
-              child: const Text('Save', style: TextStyle(color: kBg)),
+              child: Text(
+                _handle == null ? 'Choose handle' : 'Change handle',
+                style: const TextStyle(color: kBg),
+              ),
             ),
           ),
           if (_bioAvailable) ...[
@@ -1544,6 +1694,25 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               ],
             ),
           ],
+          const SizedBox(height: 8),
+          const Divider(color: kBorder),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Account backup',
+              style: TextStyle(color: kText, fontSize: 14),
+            ),
+            subtitle: const Text(
+              'Keep a copy so you can restore your account',
+              style: TextStyle(color: kMuted, fontSize: 11),
+            ),
+            trailing: const Icon(Icons.chevron_right, color: kMuted),
+            onTap: () {
+              final nav = Navigator.of(context);
+              nav.pop();
+              nav.push(MaterialPageRoute(builder: (_) => const BackupScreen()));
+            },
+          ),
         ],
       ),
     );

@@ -28,9 +28,19 @@ Most messengers say they're private. Most of them have a server in the middle th
 | 👁 **Biometric lock** | Fingerprint / face auth on open |
 | 🔗 **On-demand connections** | Connects only when sending, auto-closes after 2 min idle |
 | 🕸 **Multi-device mesh** | Each device connects independently — scales to any number of contacts |
+| 🗣 **Community forum** | Native forum.site feed, categories, posts, replies, pictures, emoji and public avatars |
 | 🆔 **Zero identity** | No accounts, no phone numbers, no email — identity is a cryptographic key pair |
 
 ---
+
+## Community forum
+
+The Contacts screen opens the native `forum.site` community feed through Mercury Relay. It supports category filtering, posts, replies, emoji insertion, feature-gated pictures, and public profile avatars. The forum key is stored in Android secure storage using the same `mercury_forum_key_v1` format as Mercury Desktop; import/export lets one forum identity move between devices.
+
+When the forum advertises Axon handle registration, **Join with Axon handle** opens the Axon browser. Complete its signed registration on `forum.site`, copy the forum key from the forum account, return to Mercury, and choose **Use key from another device**. Axon signs the handle proof; its private key is not transferred to Mercury.
+
+
+Mercury also sends the chosen Android display name to the private UnSync owner dashboard during signed signaling authentication. This labels the device in the dashboard’s Mercury section; it is separate from both a forum.site account and a public mesh handle. Older app versions do not include the name.
 
 ## Architecture
 

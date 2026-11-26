@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
+import '../services/age_confirmation.dart';
 import '../services/identity_service.dart';
+import 'age_gate_screen.dart';
 import '../services/biometric_service.dart';
 import '../services/startup_latency.dart';
 import 'biometric_screen.dart';
@@ -24,6 +26,21 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _checkIdentity() async {
+    if (!await AgeConfirmation.isConfirmed()) {
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (ctx) => AgeGateScreen(
+            onConfirmed: () => Navigator.pushReplacement(
+              ctx,
+              MaterialPageRoute(builder: (_) => const SplashScreen()),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     StartupLatency.mark('identity_load_start', data: {'screen': 'splash'});
     await _identity.initialize();
     StartupLatency.mark(

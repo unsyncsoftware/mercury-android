@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show compute, visibleForTesting;
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../theme.dart';
 import '../models/contact.dart';
 import '../models/message.dart';
@@ -10,7 +14,13 @@ import '../services/relay_service.dart';
 import '../services/message_notification_service.dart';
 import '../services/messages_service.dart';
 import '../services/signal_service.dart';
+import '../services/chat_image.dart';
+import '../services/chat_image_store.dart';
+import '../services/profile_sync.dart';
 import 'call_screen.dart';
+
+String? _buildEnvelopeInIsolate(List<Object?> args) =>
+    buildImageEnvelope(args[0] as Uint8List, caption: args[1] as String?);
 
 class ChatScreen extends StatefulWidget {
   final Contact contact;
@@ -21,13 +31,26 @@ class ChatScreen extends StatefulWidget {
   final String? myName;
   final Future<void> Function(String peerId, Map<String, dynamic> bundle)? onProcessBundle;
   final Future<void> Function(String peerId, Map<String, dynamic> bundle)? onInitializeSession;
-  final Function(String text, bool isSent)? onMessageSaved;
+  final Function(String text, bool isSent, {String? imagePath, String? caption})? onMessageSaved;
   final MessagesService? messagesService;
   final ValueNotifier<String>? newMessageNotifier;
   final Future<String> Function(String)? onEncrypt;
   final ValueNotifier<bool>? callAnsweredNotifier;
   final ValueNotifier<dynamic>? remoteStreamNotifier;
   final Future<bool> Function(Contact contact)? onStartVoiceCall;
+
+  /// Test seams for picture sending; defaults use the gallery picker and an
+  /// isolate for compression.
+  @visibleForTesting
+  final Future<Uint8List?> Function()? pickPicture;
+  @visibleForTesting
+  final Future<String?> Function(Uint8List bytes, String? caption)? buildPictureEnvelope;
+  @visibleForTesting
+  final Directory? imageRoot;
+
+  /// Path of our own profile photo; it is sent to this contact once (and again
+  /// whenever it changes) as a small encrypted profile message.
+  final String? profilePhotoPath;
 
   const ChatScreen({
     super.key,
@@ -46,6 +69,10 @@ class ChatScreen extends StatefulWidget {
     this.callAnsweredNotifier,
     this.remoteStreamNotifier,
     this.onStartVoiceCall,
+    this.pickPicture,
+    this.buildPictureEnvelope,
+    this.imageRoot,
+    this.profilePhotoPath,
   });
 
   @override
@@ -74,6 +101,7 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _messages = stored.map((m) => Message(
             text: m.text, isSent: m.isSent, time: m.time,
+            imagePath: m.imagePath, caption: m.caption,
           )).toList();
         });
       }
@@ -83,6 +111,7 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.newMessageNotifier?.addListener(_onNewMessage);
     
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(jump: true));
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_syncProfile()));
   }
 
   void _onNewMessage() {
@@ -96,6 +125,7 @@ class _ChatScreenState extends State<ChatScreen> {
           setState(() {
             _messages = stored.map((m) => Message(
               text: m.text, isSent: m.isSent, time: m.time,
+              imagePath: m.imagePath, caption: m.caption,
             )).toList();
           });
           _scrollToBottom();
@@ -136,20 +166,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
-    String payload;
-    try {
-      payload = await _encryptForSend(text);
-    } on SignalSessionMissingException {
-      final recovered = await _establishSessionAndEncrypt(text);
-      if (recovered == null) {
-        _showSecureSessionError();
-        return;
-      }
-      payload = recovered;
-    } catch (_) {
-      _showSecureSessionError();
-      return;
-    }
+    final payload = await _encryptPlaintext(text);
+    if (payload == null) return;
 
     try {
       await _transmitPayload(payload);
@@ -164,6 +182,132 @@ class _ChatScreenState extends State<ChatScreen> {
       _controller.clear();
     });
     _scrollToBottom();
+    unawaited(_syncProfile());
+  }
+
+  /// Encrypts [plaintext] for the contact, setting up a session if needed.
+  /// Shows the secure-session error and returns null on failure.
+  Future<String?> _encryptPlaintext(String plaintext) async {
+    try {
+      return await _encryptForSend(plaintext);
+    } on SignalSessionMissingException {
+      final recovered = await _establishSessionAndEncrypt(plaintext);
+      if (recovered == null) _showSecureSessionError();
+      return recovered;
+    } catch (_) {
+      _showSecureSessionError();
+      return null;
+    }
+  }
+
+  bool _syncingProfile = false;
+
+  /// Sends our profile photo to this contact if they have not got the current
+  /// one. Silent on every failure (no session yet, offline): it simply tries
+  /// again at the next trigger. Never sets up a session or shows an error.
+  Future<void> _syncProfile() async {
+    if (_syncingProfile) return;
+    _syncingProfile = true;
+    try {
+      final photoPath = widget.profilePhotoPath;
+      final envelope = await ProfileSync.pendingProfileEnvelope(widget.contact.id, photoPath);
+      if (envelope == null) return;
+      final p2p = widget.signaling?.isPeerConnected(widget.contact.id) ?? false;
+      final relay = widget.relayService;
+      // The relay silently drops stored messages while disconnected, so only
+      // mark the photo as sent when it really had a way out.
+      if (!p2p && relay != null && !relay.isConnected) return;
+      final payload = await _encryptForSend(envelope);
+      await _transmitPayload(payload);
+      await ProfileSync.markSent(widget.contact.id, photoPath);
+    } catch (_) {
+      // Retried at the next trigger.
+    } finally {
+      _syncingProfile = false;
+    }
+  }
+
+  bool _sendingPicture = false;
+
+  Future<Uint8List?> _pickPictureBytes() async {
+    final custom = widget.pickPicture;
+    if (custom != null) return custom();
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 2560,
+      maxHeight: 2560,
+    );
+    return picked?.readAsBytes();
+  }
+
+  Future<String?> _buildEnvelope(Uint8List bytes, String? caption) {
+    final custom = widget.buildPictureEnvelope;
+    if (custom != null) return custom(bytes, caption);
+    return compute(_buildEnvelopeInIsolate, <Object?>[bytes, caption]);
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Picks a picture, compresses it, and sends it as an encrypted envelope.
+  /// Anything typed in the message box becomes the caption.
+  Future<void> _sendPicture() async {
+    if (_sendingPicture) return;
+    setState(() => _sendingPicture = true);
+    try {
+      final bytes = await _pickPictureBytes();
+      if (bytes == null) return;
+      final typed = _controller.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final caption = typed.isEmpty ? null : typed;
+      final envelope = await _buildEnvelope(bytes, caption);
+      if (envelope == null) {
+        _toast('Picture too large to send');
+        return;
+      }
+      final payload = await _encryptPlaintext(envelope);
+      if (payload == null) return;
+      try {
+        await _transmitPayload(payload);
+      } catch (_) {
+        _showSecureSessionError();
+        return;
+      }
+      final sent = parseImageEnvelope(envelope);
+      if (sent == null) return;
+      // The picture is already sent; a failure to keep a local copy must not
+      // read as "could not send" (the user would send it again).
+      String path;
+      try {
+        path = await ChatImageStore.save(
+          widget.contact.id,
+          sent.bytes,
+          root: widget.imageRoot,
+        );
+      } catch (_) {
+        _toast('Sent, but a copy could not be saved on this device');
+        return;
+      }
+      widget.onMessageSaved?.call('', true, imagePath: path, caption: caption);
+      if (!mounted) return;
+      setState(() {
+        _messages.add(Message(
+          text: '',
+          isSent: true,
+          time: _currentTime(),
+          imagePath: path,
+          caption: caption,
+        ));
+        _controller.clear();
+      });
+      _scrollToBottom();
+      unawaited(_syncProfile());
+    } catch (_) {
+      _toast('Could not send that picture');
+    } finally {
+      if (mounted) setState(() => _sendingPicture = false);
+    }
   }
 
   Future<String> _encryptForSend(String text) async {
@@ -361,7 +505,7 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               itemCount: _messages.length,
               itemBuilder: (context, index) =>
-                  _MessageBubble(message: _messages[index]),
+                  MessageBubble(message: _messages[index]),
             ),
           ),
           Container(
@@ -372,6 +516,11 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
+                IconButton(
+                  tooltip: 'Attach picture',
+                  icon: const Icon(Icons.image_outlined, color: kMuted),
+                  onPressed: _sendingPicture ? null : _sendPicture,
+                ),
                 Expanded(
                   child: Container(
                     decoration: BoxDecoration(
@@ -412,9 +561,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class MessageBubble extends StatelessWidget {
   final Message message;
-  const _MessageBubble({required this.message});
+  const MessageBubble({required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -446,15 +595,17 @@ class _MessageBubble extends StatelessWidget {
                   bottomRight: Radius.circular(message.isSent ? 2 : 8),
                 ),
               ),
-              child: Text(
-                message.text,
-                style: TextStyle(
-                  color: message.isSent
-                      ? const Color(0xFFB3FFD9)
-                      : kText,
-                  fontSize: 14, height: 1.5,
-                ),
-              ),
+              child: message.imagePath != null
+                  ? _PictureContent(message: message)
+                  : Text(
+                      message.text,
+                      style: TextStyle(
+                        color: message.isSent
+                            ? const Color(0xFFB3FFD9)
+                            : kText,
+                        fontSize: 14, height: 1.5,
+                      ),
+                    ),
             ),
             const SizedBox(height: 3),
             Row(
@@ -471,6 +622,68 @@ class _MessageBubble extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// A picture message: the image (tap for full screen) and optional caption.
+class _PictureContent extends StatelessWidget {
+  final Message message;
+  const _PictureContent({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final path = message.imagePath!;
+    final caption = message.caption;
+    const unavailable = Text(
+      'Picture could not be displayed',
+      style: TextStyle(color: kMuted, fontSize: 13),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => Scaffold(
+                backgroundColor: Colors.black,
+                appBar: AppBar(
+                  backgroundColor: Colors.black,
+                  iconTheme: const IconThemeData(color: Colors.white),
+                ),
+                body: Center(
+                  child: InteractiveViewer(
+                    child: Image.file(
+                      File(path),
+                      errorBuilder: (context, error, stack) => unavailable,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 260, maxHeight: 320),
+            child: Image.file(
+              File(path),
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stack) => unavailable,
+            ),
+          ),
+        ),
+        if (caption != null && caption.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            caption,
+            style: TextStyle(
+              color: message.isSent ? const Color(0xFFB3FFD9) : kText,
+              fontSize: 14,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

@@ -49,6 +49,17 @@ class PairingWindowService {
   static bool mayIntroduceTo({required bool isSavedContact}) =>
       isSavedContact || isOpen;
 
+  /// Whether an incoming handshake may be acted on. [senderId] is the
+  /// connection's verified peer id; [claimedId] is the id written inside the
+  /// message. They must match, and the sender must be a saved contact or the
+  /// user must be pairing.
+  static bool mayAcceptHandshake({
+    required String senderId,
+    required String claimedId,
+    required bool isSavedContact,
+  }) =>
+      senderId == claimedId && mayIntroduceTo(isSavedContact: isSavedContact);
+
   /// Test hook — clears all window state and restores the real clock.
   static void reset() {
     _screenOpen = false;

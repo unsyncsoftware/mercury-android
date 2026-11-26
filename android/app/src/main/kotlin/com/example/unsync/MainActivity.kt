@@ -1,5 +1,6 @@
 package com.example.unsync
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -9,6 +10,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterFragmentActivity() {
     private var launchPayload: String? = null
+    private val backupDocuments by lazy { BackupDocuments(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Log.i(
@@ -25,12 +27,31 @@ class MainActivity : FlutterFragmentActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             "uk.unsync.messenger/launch_intent"
         ).setMethodCallHandler { call, result ->
-            if (call.method == "initialNotificationPayload") {
+            if (call.method == "openAxonForum") {
+                try {
+                    val intent = packageManager.getLaunchIntentForPackage("com.unsync.axon")
+                        ?: throw IllegalStateException("Axon browser is not installed")
+                    startActivity(intent)
+                    result.success(true)
+                } catch (error: Exception) {
+                    result.error("axon_unavailable", error.message ?: "Could not open Axon", null)
+                }
+            } else if (call.method == "initialNotificationPayload") {
                 result.success(launchPayload)
             } else {
                 result.notImplemented()
             }
         }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            BackupDocuments.CHANNEL
+        ).setMethodCallHandler { call, result -> backupDocuments.handle(call, result) }
+    }
+
+    @Deprecated("Activity results for the backup folder and file pickers")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (backupDocuments.onActivityResult(requestCode, resultCode, data)) return
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun getInitialRoute(): String {

@@ -5,23 +5,31 @@ class StoredMessage {
   final String text;
   final bool isSent;
   final String time;
+  final String? imagePath;
+  final String? caption;
 
   StoredMessage({
     required this.text,
     required this.isSent,
     required this.time,
+    this.imagePath,
+    this.caption,
   });
 
   Map<String, dynamic> toJson() => {
     'text': text,
     'isSent': isSent,
     'time': time,
+    if (imagePath != null) 'imagePath': imagePath,
+    if (caption != null) 'caption': caption,
   };
 
   factory StoredMessage.fromJson(Map<String, dynamic> json) => StoredMessage(
     text: json['text'],
     isSent: json['isSent'],
     time: json['time'],
+    imagePath: json['imagePath'] as String?,
+    caption: json['caption'] as String?,
   );
 }
 
@@ -44,13 +52,21 @@ class MessagesService {
     await prefs.remove('$_prefix$peerId');
   }
 
-  Future<void> addMessage(String peerId, String text, bool isSent) async {
+  Future<void> addMessage(
+    String peerId,
+    String text,
+    bool isSent, {
+    String? imagePath,
+    String? caption,
+  }) async {
     if (!_cache.containsKey(peerId)) await getMessages(peerId);
     _cache.putIfAbsent(peerId, () => []);
     _cache[peerId]!.add(StoredMessage(
       text: text,
       isSent: isSent,
       time: DateTime.now().toIso8601String(),
+      imagePath: imagePath,
+      caption: caption,
     ));
     await _save(peerId);
   }

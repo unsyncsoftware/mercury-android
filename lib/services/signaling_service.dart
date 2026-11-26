@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'webrtc_service.dart';
 import 'startup_latency.dart';
+import 'handle_service.dart';
 
 typedef SignalingChannelFactory = WebSocketChannel Function(Uri uri);
 
@@ -116,6 +117,14 @@ class SignalingService {
              Duration(seconds: 30),
              Duration(seconds: 60),
            ];
+
+  void updateHandle(String handle) {
+    _myHandle = handle;
+    final id = _myId;
+    if (id != null && _registered) {
+      unawaited(connect(id, fcmToken: _fcmToken, handle: handle));
+    }
+  }
 
   Future<void> connect(String myId, {String? fcmToken, String? handle}) async {
     if (fcmToken != null) {
@@ -264,7 +273,10 @@ class SignalingService {
     });
   }
 
-  void _handleMessage(Map<String, dynamic> msg, int connectionGeneration) async {
+  void _handleMessage(
+    Map<String, dynamic> msg,
+    int connectionGeneration,
+  ) async {
     try {
       await _dispatchMessage(msg, connectionGeneration);
     } catch (e, stack) {
@@ -335,6 +347,29 @@ class SignalingService {
         // A token that arrived between `register` and `registered` was held
         // back; send it now that the server will accept it.
         _flushFcmTokenIfStale();
+        break;
+
+      case 'handle_claim_result':
+        final claim = _pendingClaim;
+        _pendingClaim = null;
+        if (claim != null && !claim.isCompleted) {
+          claim.complete(HandleClaimResult(
+            ok: msg['ok'] == true,
+            handle: msg['handle'] is String ? msg['handle'] as String : null,
+            reason: msg['reason'] is String ? msg['reason'] as String : null,
+          ));
+        }
+        break;
+
+      case 'handle_status':
+        final status = _pendingHandleStatus;
+        _pendingHandleStatus = null;
+        if (status != null && !status.isCompleted) {
+          status.complete(HandleStatus(
+            supported: true,
+            handle: msg['handle'] is String ? msg['handle'] as String : null,
+          ));
+        }
         break;
 
       case 'knock':
@@ -627,6 +662,7 @@ class SignalingService {
     final response = await _identityService.signSignalingAuthChallenge(
       nonce: nonce,
       serverTime: serverTime,
+      displayName: _myHandle,
     );
     if (response == null) {
       print('Signaling auth identity missing generation=$connectionGeneration');
@@ -645,6 +681,10 @@ class SignalingService {
       'peer_id': response.peerId,
       'pubkey': response.publicKey,
       'signature': response.signature,
+      if (response.displayName != null) ...{
+        'auth_version': response.authVersion,
+        'display_name': response.displayName!,
+      },
     });
     StartupLatency.mark('auth_response');
     print('Signaling auth_response sent');
@@ -1158,6 +1198,45 @@ class SignalingService {
 
   void _send(Map<String, dynamic> data) {
     _channel?.sink.add(jsonEncode(data));
+  }
+
+  Completer<HandleClaimResult>? _pendingClaim;
+  Completer<HandleStatus>? _pendingHandleStatus;
+
+  /// Asks the server for [handle]. Needs a logged-in connection.
+  Future<HandleClaimResult> claimHandle(
+    String handle, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final previous = _pendingClaim;
+    if (previous != null && !previous.isCompleted) {
+      previous.complete(const HandleClaimResult(ok: false, reason: 'timeout'));
+    }
+    final completer = Completer<HandleClaimResult>();
+    _pendingClaim = completer;
+    _send({'type': 'claim_handle', 'handle': HandleService.normalize(handle)});
+    return completer.future.timeout(
+      timeout,
+      onTimeout: () => const HandleClaimResult(ok: false, reason: 'timeout'),
+    );
+  }
+
+  /// Asks the server which handle this device owns. An older server does not
+  /// answer, which is reported as `supported: false`.
+  Future<HandleStatus> fetchHandle({
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final previous = _pendingHandleStatus;
+    if (previous != null && !previous.isCompleted) {
+      previous.complete(const HandleStatus(supported: false));
+    }
+    final completer = Completer<HandleStatus>();
+    _pendingHandleStatus = completer;
+    _send({'type': 'get_handle'});
+    return completer.future.timeout(
+      timeout,
+      onTimeout: () => const HandleStatus(supported: false),
+    );
   }
 
   void dispose() => disconnect();

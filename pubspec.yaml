@@ -51,6 +51,7 @@ dependencies:
   image_picker: ^1.2.1
   image: ^4.5.4
   path_provider: ^2.1.5
+  pointycastle: ^4.0.0
 
 dev_dependencies:
   flutter_test:
@@ -66,9 +67,9 @@ dev_dependencies:
 
 flutter_icons:
   android: true
-  ios: true
+  ios: false
   image_path: "assets/icon.png"
-  adaptive_icon_background: "#080808"
+  adaptive_icon_background: "#06303c"
   adaptive_icon_foreground: "assets/icon.png"
 
 # For information on the generic Dart part of this file, see the

@@ -31,11 +31,15 @@ class MeshAuthResponse {
     required this.peerId,
     required this.publicKey,
     required this.signature,
+    this.authVersion = 'cloaknet-auth-v1',
+    this.displayName,
   });
 
   final String peerId;
   final String publicKey;
   final String signature;
+  final String authVersion;
+  final String? displayName;
 }
 
 typedef MeshRelayAuthResponse = MeshAuthResponse;
@@ -110,6 +114,7 @@ class IdentityService {
   Future<MeshAuthResponse?> signSignalingAuthChallenge({
     required String nonce,
     required Object serverTime,
+    String? displayName,
   }) async {
     final identity = await _loadMeshIdentity();
     if (identity == null) {
@@ -123,6 +128,7 @@ class IdentityService {
       nonce: nonce,
       serverTime: serverTime,
       debugLogPrefix: _signalingAuthDebug ? '[signaling-auth]' : null,
+      displayName: displayName,
     );
   }
 
@@ -228,6 +234,16 @@ class IdentityService {
     );
   }
 
+  static String signalingAuthSigningStringV2({
+    required String peerId,
+    required String nonce,
+    required Object serverTime,
+    required String displayName,
+  }) {
+    final encodedName = _base64UrlNoPadding(utf8.encode(displayName));
+    return 'cloaknet-auth-v2|signaling|$peerId|$nonce|$serverTime|$encodedName';
+  }
+
   static String authSigningString({
     required String version,
     required String role,
@@ -245,15 +261,28 @@ class IdentityService {
     required String nonce,
     required Object serverTime,
     required String? debugLogPrefix,
+    String? displayName,
   }) {
     final privateKey = _ed25519PrivateKey(identity.privateKey);
-    final payload = authSigningString(
-      version: version,
-      role: role,
-      peerId: identity.peerId,
-      nonce: nonce,
-      serverTime: serverTime,
-    );
+    final signedDisplayName = role == 'signaling' ? displayName?.trim() : null;
+    final authVersion =
+        signedDisplayName != null && signedDisplayName.isNotEmpty
+        ? 'cloaknet-auth-v2'
+        : version;
+    final payload = authVersion == 'cloaknet-auth-v2'
+        ? signalingAuthSigningStringV2(
+            peerId: identity.peerId,
+            nonce: nonce,
+            serverTime: serverTime,
+            displayName: signedDisplayName!,
+          )
+        : authSigningString(
+            version: version,
+            role: role,
+            peerId: identity.peerId,
+            nonce: nonce,
+            serverTime: serverTime,
+          );
     if (debugLogPrefix != null) {
       print('$debugLogPrefix signing_string=$payload');
     }
@@ -266,6 +295,8 @@ class IdentityService {
       peerId: identity.peerId,
       publicKey: _relayPublicKey(identity.publicKey),
       signature: _base64UrlNoPadding(signature),
+      authVersion: authVersion,
+      displayName: signedDisplayName,
     );
   }
 
