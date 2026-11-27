@@ -281,6 +281,39 @@ class CommunityService {
     required String body,
   }) => _write('/api/w/dm', {'to': to, 'body': body});
 
+  /// Deletes this device's forum membership (the forum's /api/w/leave): the
+  /// membership, messages and profile picture go; posts stay as "deleted
+  /// member". Returns 'left', 'not_member' (never joined from here) or
+  /// 'unsupported' (the forum server is too old). Throws if the forum refuses.
+  Future<String> leaveForum() async {
+    await _loadKey();
+    if (_key == null) return 'not_member';
+    final session = await loadSession();
+    if (session['handle'] == null) {
+      await _forgetKey();
+      return 'not_member';
+    }
+    final features = session['features'];
+    if (features is! Map || features['leave'] != true) return 'unsupported';
+    final result = await get(
+      Uri(
+        path: '/api/w/leave',
+        queryParameters: {'confirm': 'delete', 't': '${session['token']}'},
+      ).toString(),
+    );
+    if (result['ok'] != true) {
+      throw StateError('The forum did not confirm leaving');
+    }
+    await _forgetKey();
+    return 'left';
+  }
+
+  Future<void> _forgetKey() async {
+    await _keyStorage.delete(key: _keyName);
+    _key = null;
+    _session = null;
+  }
+
   Future<Map<String, dynamic>> _write(
     String path,
     Map<String, String> params,

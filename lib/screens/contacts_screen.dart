@@ -30,6 +30,8 @@ import '../services/handle_service.dart';
 import 'backup_screen.dart';
 import 'choose_handle_screen.dart';
 import 'community_screen.dart';
+import 'delete_account_screen.dart';
+import '../services/community_service.dart';
 import 'notes_screen.dart';
 import 'qr_screen.dart';
 import 'call_screen.dart';
@@ -1011,6 +1013,25 @@ class _ContactsScreenState extends State<ContactsScreen>
     );
   }
 
+  void _openDeleteAccount() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DeleteAccountScreen(
+          handle: _identity.displayName,
+          deleteOnServer: () => _signaling.deleteAccount(),
+          leaveForum: () =>
+              CommunityService(_relayService, _identity.peerId ?? '')
+                  .leaveForum(),
+          openBackup: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const BackupScreen()),
+          ),
+          // The background service would otherwise keep Mercury running.
+          beforeExit: ForegroundServiceManager.stop,
+        ),
+      ),
+    );
+  }
+
   void _showSettings(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -1023,6 +1044,7 @@ class _ContactsScreenState extends State<ContactsScreen>
         onProfilePhotoChanged: (path) {
           if (mounted) setState(() => _profilePhotoPath = path);
         },
+        onDeleteAccount: _openDeleteAccount,
       ),
     );
   }
@@ -1514,11 +1536,13 @@ class _SettingsSheet extends StatefulWidget {
   final VoidCallback onChangeHandle;
   final String? profilePhotoPath;
   final ValueChanged<String?> onProfilePhotoChanged;
+  final VoidCallback onDeleteAccount;
   const _SettingsSheet({
     required this.identity,
     required this.onChangeHandle,
     required this.profilePhotoPath,
     required this.onProfilePhotoChanged,
+    required this.onDeleteAccount,
   });
 
   @override
@@ -1711,6 +1735,22 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               final nav = Navigator.of(context);
               nav.pop();
               nav.push(MaterialPageRoute(builder: (_) => const BackupScreen()));
+            },
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Delete account',
+              style: TextStyle(color: Colors.redAccent, fontSize: 14),
+            ),
+            subtitle: const Text(
+              'Remove it from this device, or delete it everywhere',
+              style: TextStyle(color: kMuted, fontSize: 11),
+            ),
+            trailing: const Icon(Icons.chevron_right, color: kMuted),
+            onTap: () {
+              Navigator.of(context).pop();
+              widget.onDeleteAccount();
             },
           ),
         ],
