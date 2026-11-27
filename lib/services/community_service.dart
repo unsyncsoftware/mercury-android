@@ -215,6 +215,62 @@ class CommunityService {
     required String body,
   }) => _write('/api/w/comment', {'post': postId, 'body': body});
 
+  /// Author-only. [removeImage] drops the picture; otherwise it is kept.
+  Future<Map<String, dynamic>> editPost({
+    required String postId,
+    required String title,
+    required String content,
+    required String category,
+    bool removeImage = false,
+  }) => _write('/api/w/post/edit', {
+    'id': postId,
+    'title': title,
+    'content': content,
+    'category': category,
+    if (removeImage) 'remove_image': '1',
+  });
+
+  Future<Map<String, dynamic>> deletePost(String postId) =>
+      _write('/api/w/post/delete', {'id': postId});
+
+  /// [kind] is 'post' or 'comment'.
+  Future<Map<String, dynamic>> report({
+    required String kind,
+    required String id,
+    required String reason,
+  }) => _write('/api/w/report', {'kind': kind, 'id': id, 'reason': reason});
+
+  Future<List<Map<String, dynamic>>> members() async {
+    final result = await get('/api/members');
+    return (result['members'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .toList() ??
+        [];
+  }
+
+  Future<List<Map<String, dynamic>>> dmThreads() async {
+    final result = await get('/api/dm/threads');
+    return (result['threads'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .toList() ??
+        [];
+  }
+
+  Future<List<Map<String, dynamic>>> dmWith(String handle) async {
+    final result = await get(
+      Uri(path: '/api/dm/with', queryParameters: {'h': handle}).toString(),
+    );
+    return (result['messages'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .toList() ??
+        [];
+  }
+
+  Future<Map<String, dynamic>> sendDm({
+    required String to,
+    required String body,
+  }) => _write('/api/w/dm', {'to': to, 'body': body});
+
   Future<Map<String, dynamic>> _write(
     String path,
     Map<String, String> params,
