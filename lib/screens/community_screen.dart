@@ -42,6 +42,13 @@ class _CommunityScreenState extends State<CommunityScreen> {
   int _memberCount = 0;
   int _unreadMessages = 0;
 
+  /// Older forum servers have no author edit/delete; newer ones say so in
+  /// their feature list. Without it, Edit and Delete are not offered.
+  bool get _serverSupportsPostEdit {
+    final features = _session?['features'];
+    return features is Map && features['postEdit'] == true;
+  }
+
   /// Peers in the forum and unread direct messages, for the badges. A
   /// failure here only leaves the badges as they were.
   Future<void> _loadCounts() async {
@@ -702,6 +709,7 @@ class _CommunityScreenState extends State<CommunityScreen> {
                                 community: _community,
                                 postId: '${post['id']}',
                                 canWrite: _session?['canWrite'] == true,
+                                canEdit: _serverSupportsPostEdit,
                                 myHandle: _session?['handle'] as String?,
                                 categories:
                                     (_session?['categories'] as List?)
@@ -808,6 +816,7 @@ class _CommunityPostScreen extends StatefulWidget {
     required this.community,
     required this.postId,
     required this.canWrite,
+    required this.canEdit,
     required this.myHandle,
     required this.categories,
   });
@@ -815,6 +824,9 @@ class _CommunityPostScreen extends StatefulWidget {
   final CommunityService community;
   final String postId;
   final bool canWrite;
+
+  /// The forum server supports authors editing and deleting their own posts.
+  final bool canEdit;
   final String? myHandle;
   final List<String> categories;
 
@@ -894,7 +906,11 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
         foregroundColor: kText,
         title: const Text('Community'),
         actions: [
-          if (post != null && widget.canWrite)
+          // Your own post: Edit/Delete, only when the forum server offers them.
+          // Someone else's post: Report/Block.
+          if (post != null &&
+              widget.canWrite &&
+              (widget.canEdit || !_isMine(post)))
             if (_isMine(post))
               PopupMenuButton<String>(
                 tooltip: 'Your post',
