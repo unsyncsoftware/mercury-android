@@ -298,6 +298,11 @@ class _CommunityScreenState extends State<CommunityScreen> {
       );
     }
     if (action == null || !mounted) return;
+    if ((action == 'join' || action == 'invite' || action == 'axon') &&
+        !await confirmCommunityRules(context)) {
+      return;
+    }
+    if (!mounted) return;
     if (action == 'axon') {
       final proceed = await showDialog<bool>(
         context: context,

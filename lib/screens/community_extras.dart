@@ -63,6 +63,57 @@ class ForumAvatar extends StatelessWidget {
   }
 }
 
+/// Shows the Community rules before a new membership. Returns true only when
+/// the person ticks that they are 18+ and agree. The wording matches the forum
+/// site's join dialog.
+Future<bool> confirmCommunityRules(BuildContext context) async {
+  var agreed = false;
+  final accepted = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, update) => AlertDialog(
+        backgroundColor: kSurface,
+        title: const Text('Community rules', style: TextStyle(color: kText)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'You must be 18 or older. No nudity or sexual content, no '
+              'graphic violence, no harassment or hate, nothing illegal. '
+              'Moderators can hide posts and ban members who break these '
+              'rules.',
+              style: TextStyle(color: kText),
+            ),
+            const SizedBox(height: 8),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: agreed,
+              onChanged: (value) => update(() => agreed = value == true),
+              title: const Text(
+                'I am 18 or older and I agree to these rules.',
+                style: TextStyle(color: kText, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: agreed ? () => Navigator.pop(dialogContext, true) : null,
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    ),
+  );
+  return accepted == true;
+}
+
 /// One button of the Community second row: icon, label and a count badge.
 class ForumNavButton extends StatelessWidget {
   const ForumNavButton({
