@@ -63,6 +63,156 @@ class ForumAvatar extends StatelessWidget {
   }
 }
 
+/// Confirms, then blocks [handle] on this device. Returns true when blocked.
+Future<bool> blockMember(
+  BuildContext context,
+  CommunityService community,
+  String handle,
+) async {
+  final sure = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: kSurface,
+      title: Text('Block $handle?', style: const TextStyle(color: kText)),
+      content: const Text(
+        'You will no longer see their posts, replies or messages on this '
+        'device. They are not told. You can unblock them from Members, '
+        'Blocked.',
+        style: TextStyle(color: kMuted),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('Block'),
+        ),
+      ],
+    ),
+  );
+  if (sure != true) return false;
+  await community.blocks.block(handle);
+  if (context.mounted) _toast(context, '$handle blocked');
+  return true;
+}
+
+/// The menu on someone else's post or reply: report it, or block its author.
+class ReportBlockMenu extends StatelessWidget {
+  const ReportBlockMenu({
+    super.key,
+    required this.community,
+    required this.kind,
+    required this.id,
+    required this.author,
+    required this.onBlocked,
+    this.iconSize = 24,
+  });
+
+  final CommunityService community;
+
+  /// 'post' or 'comment'.
+  final String kind;
+  final String id;
+  final String author;
+  final VoidCallback onBlocked;
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      color: kSurface,
+      iconSize: iconSize,
+      icon: Icon(Icons.more_vert, size: iconSize, color: kMuted),
+      onSelected: (value) async {
+        if (value == 'report') {
+          await reportToModerators(context, community, kind: kind, id: id);
+        } else if (await blockMember(context, community, author)) {
+          onBlocked();
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: 'report',
+          child: Text(kind == 'post' ? 'Report post' : 'Report reply'),
+        ),
+        PopupMenuItem(value: 'block', child: Text('Block $author')),
+      ],
+    );
+  }
+}
+
+class CommunityBlockedScreen extends StatefulWidget {
+  const CommunityBlockedScreen({super.key, required this.community});
+
+  final CommunityService community;
+
+  @override
+  State<CommunityBlockedScreen> createState() => _CommunityBlockedScreenState();
+}
+
+class _CommunityBlockedScreenState extends State<CommunityBlockedScreen> {
+  List<String>? _handles;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    await widget.community.blocks.ensureLoaded();
+    if (mounted) setState(() => _handles = widget.community.blocks.all);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final handles = _handles;
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(
+        backgroundColor: kBg,
+        foregroundColor: kText,
+        title: const Text('Blocked'),
+      ),
+      body: handles == null
+          ? const Center(child: CircularProgressIndicator(color: kAccent))
+          : handles.isEmpty
+          ? const Center(
+              child: Text(
+                'You have not blocked anyone.',
+                style: TextStyle(color: kMuted),
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: handles.length,
+              separatorBuilder: (_, _) => const Divider(color: kBorder),
+              itemBuilder: (context, index) {
+                final handle = handles[index];
+                return ListTile(
+                  leading: ForumAvatar(
+                    community: widget.community,
+                    handle: handle,
+                  ),
+                  title: Text(handle, style: const TextStyle(color: kText)),
+                  trailing: TextButton(
+                    onPressed: () async {
+                      await widget.community.blocks.unblock(handle);
+                      if (context.mounted) _toast(context, '$handle unblocked');
+                      _load();
+                    },
+                    child: const Text('Unblock'),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
 /// Shows the Community rules before a new membership. Returns true only when
 /// the person ticks that they are 18+ and agree. The wording matches the forum
 /// site's join dialog.
@@ -408,6 +558,20 @@ class _CommunityMembersScreenState extends State<CommunityMembersScreen> {
         title: const Text('Members'),
         actions: [
           IconButton(
+            tooltip: 'Blocked',
+            icon: const Icon(Icons.block),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      CommunityBlockedScreen(community: widget.community),
+                ),
+              );
+              _load();
+            },
+          ),
+          IconButton(
             tooltip: 'Refresh',
             onPressed: _load,
             icon: const Icon(Icons.refresh),
@@ -449,22 +613,42 @@ class _CommunityMembersScreenState extends State<CommunityMembersScreen> {
                       color: status == 'Online' ? kAccent : kMuted,
                     ),
                   ),
-                  trailing: widget.canWrite && !isMe
-                      ? IconButton(
-                          tooltip: 'Message $handle',
-                          icon: const Icon(Icons.chat_bubble_outline),
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => CommunityConversationScreen(
-                                community: widget.community,
-                                myHandle: widget.myHandle,
-                                other: handle,
+                  trailing: isMe
+                      ? null
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.canWrite)
+                              IconButton(
+                                tooltip: 'Message $handle',
+                                icon: const Icon(Icons.chat_bubble_outline),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        CommunityConversationScreen(
+                                          community: widget.community,
+                                          myHandle: widget.myHandle,
+                                          other: handle,
+                                        ),
+                                  ),
+                                ),
                               ),
+                            IconButton(
+                              tooltip: 'Block $handle',
+                              icon: const Icon(Icons.block, color: kMuted),
+                              onPressed: () async {
+                                if (await blockMember(
+                                  context,
+                                  widget.community,
+                                  handle,
+                                )) {
+                                  _load();
+                                }
+                              },
                             ),
-                          ),
-                        )
-                      : null,
+                          ],
+                        ),
                 );
               },
             ),
@@ -693,6 +877,16 @@ class _CommunityConversationScreenState
         foregroundColor: kText,
         title: Text(widget.other),
         actions: [
+          IconButton(
+            tooltip: 'Block ${widget.other}',
+            icon: const Icon(Icons.block),
+            onPressed: () async {
+              if (await blockMember(context, widget.community, widget.other) &&
+                  context.mounted) {
+                Navigator.pop(context);
+              }
+            },
+          ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _load,

@@ -147,6 +147,10 @@ class _CommunityScreenState extends State<CommunityScreen> {
               ?.whereType<Map<String, dynamic>>()
               .toList() ??
           [];
+      await _community.blocks.ensureLoaded();
+      posts.removeWhere(
+        (post) => _community.blocks.isBlocked('${post['author']}'),
+      );
       if (!mounted) return;
       setState(() {
         _session = session;
@@ -878,6 +882,9 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
     final comments =
         (post?['comments'] as List?)
             ?.whereType<Map<String, dynamic>>()
+            .where(
+              (c) => !widget.community.blocks.isBlocked('${c['author']}'),
+            )
             .toList() ??
         [];
     return Scaffold(
@@ -916,15 +923,12 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
                 ],
               )
             else
-              IconButton(
-                tooltip: 'Report post',
-                icon: const Icon(Icons.flag_outlined),
-                onPressed: () => reportToModerators(
-                  context,
-                  widget.community,
-                  kind: 'post',
-                  id: widget.postId,
-                ),
+              ReportBlockMenu(
+                community: widget.community,
+                kind: 'post',
+                id: widget.postId,
+                author: '${post['author'] ?? ''}',
+                onBlocked: () => Navigator.pop(context),
               ),
         ],
       ),
@@ -1024,17 +1028,13 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
                             if (widget.canWrite &&
                                 !_isMine(comment) &&
                                 comment['id'] != null)
-                              IconButton(
-                                tooltip: 'Report reply',
-                                visualDensity: VisualDensity.compact,
+                              ReportBlockMenu(
+                                community: widget.community,
+                                kind: 'comment',
+                                id: '${comment['id']}',
+                                author: '${comment['author'] ?? ''}',
                                 iconSize: 18,
-                                icon: const Icon(Icons.flag_outlined),
-                                onPressed: () => reportToModerators(
-                                  context,
-                                  widget.community,
-                                  kind: 'comment',
-                                  id: '${comment['id']}',
-                                ),
+                                onBlocked: () => setState(() {}),
                               ),
                           ],
                         ),

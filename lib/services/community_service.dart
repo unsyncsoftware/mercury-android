@@ -7,6 +7,7 @@ import 'package:ed25519_edwards/ed25519_edwards.dart' as ed25519;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'community_blocks.dart';
 import 'relay_service.dart';
 
 /// Resolves the signed forum.site record and sends requests over Mercury's relay.
@@ -15,6 +16,9 @@ class CommunityService {
 
   final RelayService relay;
   final String peerId;
+
+  /// Members blocked on this device; their content is hidden here only.
+  final CommunityBlocks blocks = CommunityBlocks();
   String? _forumPeerId;
   DateTime? _expires;
   static const _keyStorage = FlutterSecureStorage();
@@ -240,18 +244,24 @@ class CommunityService {
     required String reason,
   }) => _write('/api/w/report', {'kind': kind, 'id': id, 'reason': reason});
 
+  /// Members, without anyone blocked on this device.
   Future<List<Map<String, dynamic>>> members() async {
     final result = await get('/api/members');
+    await blocks.ensureLoaded();
     return (result['members'] as List?)
             ?.whereType<Map<String, dynamic>>()
+            .where((m) => !blocks.isBlocked('${m['handle']}'))
             .toList() ??
         [];
   }
 
+  /// Conversations, without anyone blocked on this device.
   Future<List<Map<String, dynamic>>> dmThreads() async {
     final result = await get('/api/dm/threads');
+    await blocks.ensureLoaded();
     return (result['threads'] as List?)
             ?.whereType<Map<String, dynamic>>()
+            .where((t) => !blocks.isBlocked('${t['peer']}'))
             .toList() ??
         [];
   }
