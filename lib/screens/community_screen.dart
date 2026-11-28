@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import '../services/community_service.dart';
 import '../services/relay_service.dart';
 import '../theme.dart';
+import 'community_extras.dart';
 
 class CommunityScreen extends StatefulWidget {
   const CommunityScreen({
@@ -38,6 +39,93 @@ class _CommunityScreenState extends State<CommunityScreen> {
   bool _loading = true;
   Map<String, dynamic>? _session;
   String _category = 'All';
+  int _memberCount = 0;
+  int _unreadMessages = 0;
+
+  /// Older forum servers have no author edit/delete; newer ones say so in
+  /// their feature list. Without it, Edit and Delete are not offered.
+  bool get _serverSupportsPostEdit {
+    final features = _session?['features'];
+    return features is Map && features['postEdit'] == true;
+  }
+
+  /// Peers in the forum and unread direct messages, for the badges. A
+  /// failure here only leaves the badges as they were.
+  Future<void> _loadCounts() async {
+    try {
+      final members = await _community.members();
+      if (mounted) setState(() => _memberCount = members.length);
+    } catch (_) {}
+    if (_session?['canWrite'] != true) {
+      if (mounted) setState(() => _unreadMessages = 0);
+      return;
+    }
+    try {
+      final threads = await _community.dmThreads();
+      final unread = threads.fold<int>(
+        0,
+        (sum, t) => sum + ((t['unread'] as num?)?.toInt() ?? 0),
+      );
+      if (mounted) setState(() => _unreadMessages = unread);
+    } catch (_) {}
+  }
+
+  Widget _navRow() {
+    final canWrite = _session?['canWrite'] == true;
+    final handle = _session?['handle'] as String?;
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: kBorder)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: [
+          ForumNavButton(
+            icon: Icons.people_outline,
+            label: 'Members',
+            count: _memberCount,
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => CommunityMembersScreen(
+                    community: _community,
+                    myHandle: handle,
+                    canWrite: canWrite,
+                  ),
+                ),
+              );
+              _loadCounts();
+            },
+          ),
+          if (canWrite)
+            ForumNavButton(
+              icon: Icons.mail_outline,
+              label: 'Messages',
+              count: _unreadMessages,
+              highlight: true,
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CommunityMessagesScreen(
+                      community: _community,
+                      myHandle: handle,
+                    ),
+                  ),
+                );
+                _loadCounts();
+              },
+            ),
+          ForumNavButton(
+            icon: Icons.person_outline,
+            label: handle == null ? 'Join' : 'Account',
+            onTap: _account,
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -66,11 +154,16 @@ class _CommunityScreenState extends State<CommunityScreen> {
               ?.whereType<Map<String, dynamic>>()
               .toList() ??
           [];
+      await _community.blocks.ensureLoaded();
+      posts.removeWhere(
+        (post) => _community.blocks.isBlocked('${post['author']}'),
+      );
       if (!mounted) return;
       setState(() {
         _session = session;
         _posts = posts;
       });
+      _loadCounts();
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error.toString());
@@ -216,6 +309,11 @@ class _CommunityScreenState extends State<CommunityScreen> {
       );
     }
     if (action == null || !mounted) return;
+    if ((action == 'join' || action == 'invite' || action == 'axon') &&
+        !await confirmCommunityRules(context)) {
+      return;
+    }
+    if (!mounted) return;
     if (action == 'axon') {
       final proceed = await showDialog<bool>(
         context: context,
@@ -534,11 +632,6 @@ class _CommunityScreenState extends State<CommunityScreen> {
         title: const Text('Community'),
         actions: [
           IconButton(
-            tooltip: _session?['handle'] == null ? 'Join' : 'Account',
-            onPressed: _account,
-            icon: const Icon(Icons.person_outline),
-          ),
-          IconButton(
             tooltip: 'Refresh',
             onPressed: _load,
             icon: const Icon(Icons.refresh),
@@ -547,6 +640,7 @@ class _CommunityScreenState extends State<CommunityScreen> {
       ),
       body: Column(
         children: [
+          _navRow(),
           if (_session != null) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -615,9 +709,16 @@ class _CommunityScreenState extends State<CommunityScreen> {
                                 community: _community,
                                 postId: '${post['id']}',
                                 canWrite: _session?['canWrite'] == true,
+                                canEdit: _serverSupportsPostEdit,
+                                myHandle: _session?['handle'] as String?,
+                                categories:
+                                    (_session?['categories'] as List?)
+                                        ?.whereType<String>()
+                                        .toList() ??
+                                    const ['General'],
                               ),
                             ),
-                          ),
+                          ).then((_) => _load()),
                           child: Container(
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
@@ -715,11 +816,19 @@ class _CommunityPostScreen extends StatefulWidget {
     required this.community,
     required this.postId,
     required this.canWrite,
+    required this.canEdit,
+    required this.myHandle,
+    required this.categories,
   });
 
   final CommunityService community;
   final String postId;
   final bool canWrite;
+
+  /// The forum server supports authors editing and deleting their own posts.
+  final bool canEdit;
+  final String? myHandle;
+  final List<String> categories;
 
   @override
   State<_CommunityPostScreen> createState() => _CommunityPostScreenState();
@@ -759,6 +868,9 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
     }
   }
 
+  bool _isMine(Map<String, dynamic> item) =>
+      widget.myHandle != null && '${item['author']}' == widget.myHandle;
+
   @override
   void initState() {
     super.initState();
@@ -782,6 +894,9 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
     final comments =
         (post?['comments'] as List?)
             ?.whereType<Map<String, dynamic>>()
+            .where(
+              (c) => !widget.community.blocks.isBlocked('${c['author']}'),
+            )
             .toList() ??
         [];
     return Scaffold(
@@ -790,6 +905,48 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
         backgroundColor: kBg,
         foregroundColor: kText,
         title: const Text('Community'),
+        actions: [
+          // Your own post: Edit/Delete, only when the forum server offers them.
+          // Someone else's post: Report/Block.
+          if (post != null &&
+              widget.canWrite &&
+              (widget.canEdit || !_isMine(post)))
+            if (_isMine(post))
+              PopupMenuButton<String>(
+                tooltip: 'Your post',
+                color: kSurface,
+                onSelected: (value) async {
+                  if (value == 'edit') {
+                    if (await editOwnPost(
+                      context,
+                      widget.community,
+                      post: post,
+                      categories: widget.categories,
+                    )) {
+                      await _load();
+                    }
+                  } else if (await deleteOwnPost(
+                    context,
+                    widget.community,
+                    widget.postId,
+                  )) {
+                    if (context.mounted) Navigator.pop(context);
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('Edit post')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete post')),
+                ],
+              )
+            else
+              ReportBlockMenu(
+                community: widget.community,
+                kind: 'post',
+                id: widget.postId,
+                author: '${post['author'] ?? ''}',
+                onBlocked: () => Navigator.pop(context),
+              ),
+        ],
       ),
       body: post == null
           ? _error == null
@@ -875,13 +1032,26 @@ class _CommunityPostScreenState extends State<_CommunityPostScreen> {
                               size: 28,
                             ),
                             const SizedBox(width: 8),
-                            Text(
-                              '${comment['author'] ?? 'Unknown'}',
-                              style: const TextStyle(
-                                color: kAccent,
-                                fontSize: 12,
+                            Expanded(
+                              child: Text(
+                                '${comment['author'] ?? 'Unknown'}',
+                                style: const TextStyle(
+                                  color: kAccent,
+                                  fontSize: 12,
+                                ),
                               ),
                             ),
+                            if (widget.canWrite &&
+                                !_isMine(comment) &&
+                                comment['id'] != null)
+                              ReportBlockMenu(
+                                community: widget.community,
+                                kind: 'comment',
+                                id: '${comment['id']}',
+                                author: '${comment['author'] ?? ''}',
+                                iconSize: 18,
+                                onBlocked: () => setState(() {}),
+                              ),
                           ],
                         ),
                         const SizedBox(height: 6),

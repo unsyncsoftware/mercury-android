@@ -4,9 +4,11 @@
 # Unsync
 ### Privacy-first, peer-to-peer encrypted messenger for Android.
 
-No accounts. No phone numbers. No servers reading your messages. Just two devices talking directly to each other — encrypted end-to-end with the Signal Protocol.
+No email. No phone numbers. No servers reading your messages. Just two devices talking directly to each other — encrypted end-to-end with the Signal Protocol. Your name is a unique handle you choose.
 
-[Download APK (v0.2.0-beta)](https://github.com/chukoizkie/unsync/releases/latest) · [Release Notes](https://github.com/chukoizkie/unsync/releases) · [Report a Bug](https://github.com/chukoizkie/unsync/issues)
+**Current version: 0.5.0 (build 8).** Published on Google Play as Mercury (`uk.unsync.messenger`); 0.5.0 was sent to Play review on 2026-11-28 (see [the Desktop journal](https://github.com/unsyncsoftware/mercury-desktop/blob/main/BUILD_JOURNAL.md)). 18+ only.
+
+[Releases](https://github.com/unsyncsoftware/mercury-android/releases) · [Report a Bug](https://github.com/unsyncsoftware/mercury-android/issues) · [Privacy policy](https://mercury.unsync.uk/privacy) · [Delete your account](https://mercury.unsync.uk/delete)
 
 ---
 
@@ -29,13 +31,15 @@ Most messengers say they're private. Most of them have a server in the middle th
 | 🔗 **On-demand connections** | Connects only when sending, auto-closes after 2 min idle |
 | 🕸 **Multi-device mesh** | Each device connects independently — scales to any number of contacts |
 | 🗣 **Community forum** | Native forum.site feed, categories, posts, replies, pictures, emoji and public avatars |
-| 🆔 **Zero identity** | No accounts, no phone numbers, no email — identity is a cryptographic key pair |
+| 🆔 **Handle, not an account** | No phone number or email — identity is a cryptographic key pair, and your only name is a unique handle (held 90 days after you leave) |
+| 💾 **Encrypted backup** | Passphrase-protected `.mercurybackup` to a folder you choose (Settings → Account backup) |
+| 🗑 **Delete account** | Settings → Delete account: remove Mercury from this phone, or delete your account everywhere |
 
 ---
 
 ## Community forum
 
-The Contacts screen opens the native `forum.site` community feed through Mercury Relay. It supports category filtering, posts, replies, emoji insertion, feature-gated pictures, and public profile avatars. The forum key is stored in Android secure storage using the same `mercury_forum_key_v1` format as Mercury Desktop; import/export lets one forum identity move between devices.
+The Contacts screen opens the native `forum.site` community feed through Mercury Relay. It supports category filtering, posts, replies, emoji insertion, feature-gated pictures, and public profile avatars. Since 0.5.0 it also has edit/delete of your own posts (when the forum supports it), report, a members list, Community direct messages, and **Block** (this device only). Joining shows the community rules and an 18+ confirmation. The shared Community code is identical to Mercury Desktop's: keep them in step. The forum key is stored in Android secure storage using the same `mercury_forum_key_v1` format as Mercury Desktop; import/export lets one forum identity move between devices.
 
 When the forum advertises Axon handle registration, **Join with Axon handle** opens the Axon browser. Complete its signed registration on `forum.site`, copy the forum key from the forum account, return to Mercury, and choose **Use key from another device**. Axon signs the handle proof; its private key is not transferred to Mercury.
 
@@ -64,7 +68,7 @@ Relay Server (offline fallback)/
 ### Prerequisites
 - Flutter 3.x
 - Firebase project (for FCM push notifications)
-- A running signaling server from the separate [`unsyncsoftware/unsync-cloaknet`](https://github.com/unsyncsoftware/unsync-cloaknet) repository
+- A running signaling server from the separate [`unsyncsoftware/unsync-network`](https://github.com/unsyncsoftware/unsync-network) repository
 - A running relay server — see `/server/relay/`
 
 ### Configuration
@@ -94,12 +98,20 @@ npm install
 node server.js
 \`\`\`
 
-Production signaling is maintained in `unsyncsoftware/unsync-cloaknet` and deployed at `/root/signaling/server.js` on the VPS. Do not copy `server.js` back into Mercury.
+Production signaling is maintained in `unsyncsoftware/unsync-network` and deployed at `/root/signaling/server.js` on the VPS. Do not copy `server.js` back into Mercury.
 
 The relay server, if used locally, is still managed separately:
 \`\`\`bash
 cd server/relay && npm install && pm2 start relay.js --name unsync-relay
 \`\`\`
+
+---
+
+## Releasing to Google Play
+
+- Bump `version:` in `pubspec.yaml` (`0.5.0+8`: the number after `+` is the versionCode and must increase).
+- Create `android/key.properties` pointing at the upload keystore (`unsync-release.jks`, alias `unsync`). Both it and `*.jks` are git-ignored: never commit them, and move the keystore between PCs by USB only. The upload certificate SHA-1 must match Play Console → Protected with Play → App signing.
+- Build with `flutter build appbundle --release`, and upload the `.aab` to a new release in Play Console.
 
 ---
 
@@ -117,7 +129,7 @@ cd server/relay && npm install && pm2 start relay.js --name unsync-relay
 - [ ] Mesh-Mail — decentralized email layer on the P2P backbone
 - [ ] Unsync Vault — encrypted file sharing
 - [ ] Mirror Station — always-on home relay node (tablet/homelab)
-- [ ] Play Store public release
+- [x] Play Store public release (0.4.0 live; 0.5.0 in review)
 
 ---
 

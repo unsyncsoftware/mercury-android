@@ -361,6 +361,17 @@ class SignalingService {
         }
         break;
 
+      case 'account_delete_result':
+        final deletion = _pendingDelete;
+        _pendingDelete = null;
+        if (deletion != null && !deletion.isCompleted) {
+          deletion.complete(AccountDeleteResult(
+            ok: msg['ok'] == true,
+            reason: msg['reason'] is String ? msg['reason'] as String : null,
+          ));
+        }
+        break;
+
       case 'handle_status':
         final status = _pendingHandleStatus;
         _pendingHandleStatus = null;
@@ -1202,6 +1213,26 @@ class SignalingService {
 
   Completer<HandleClaimResult>? _pendingClaim;
   Completer<HandleStatus>? _pendingHandleStatus;
+  Completer<AccountDeleteResult>? _pendingDelete;
+
+  /// Deletes this account on the server: releases the handle (held 90 days),
+  /// removes the presence records and retires the peer id. Needs a logged-in
+  /// connection. The server closes the connection after a success.
+  Future<AccountDeleteResult> deleteAccount({
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final previous = _pendingDelete;
+    if (previous != null && !previous.isCompleted) {
+      previous.complete(const AccountDeleteResult(ok: false, reason: 'timeout'));
+    }
+    final completer = Completer<AccountDeleteResult>();
+    _pendingDelete = completer;
+    _send({'type': 'delete_account', 'confirm': 'delete'});
+    return completer.future.timeout(
+      timeout,
+      onTimeout: () => const AccountDeleteResult(ok: false, reason: 'timeout'),
+    );
+  }
 
   /// Asks the server for [handle]. Needs a logged-in connection.
   Future<HandleClaimResult> claimHandle(

@@ -13,6 +13,15 @@ class HandleClaimResult {
   final String? reason;
 }
 
+/// The server's answer to deleting this account.
+class AccountDeleteResult {
+  const AccountDeleteResult({required this.ok, this.reason});
+  final bool ok;
+
+  /// not_authenticated, confirm_required, timeout, or a server error.
+  final String? reason;
+}
+
 /// What the server says this device's handle is. [supported] is false when
 /// the server did not answer (an older server without handle ownership).
 class HandleStatus {

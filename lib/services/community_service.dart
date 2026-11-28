@@ -7,6 +7,7 @@ import 'package:ed25519_edwards/ed25519_edwards.dart' as ed25519;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'community_blocks.dart';
 import 'relay_service.dart';
 
 /// Resolves the signed forum.site record and sends requests over Mercury's relay.
@@ -15,6 +16,9 @@ class CommunityService {
 
   final RelayService relay;
   final String peerId;
+
+  /// Members blocked on this device; their content is hidden here only.
+  final CommunityBlocks blocks = CommunityBlocks();
   String? _forumPeerId;
   DateTime? _expires;
   static const _keyStorage = FlutterSecureStorage();
@@ -214,6 +218,101 @@ class CommunityService {
     required String postId,
     required String body,
   }) => _write('/api/w/comment', {'post': postId, 'body': body});
+
+  /// Author-only. [removeImage] drops the picture; otherwise it is kept.
+  Future<Map<String, dynamic>> editPost({
+    required String postId,
+    required String title,
+    required String content,
+    required String category,
+    bool removeImage = false,
+  }) => _write('/api/w/post/edit', {
+    'id': postId,
+    'title': title,
+    'content': content,
+    'category': category,
+    if (removeImage) 'remove_image': '1',
+  });
+
+  Future<Map<String, dynamic>> deletePost(String postId) =>
+      _write('/api/w/post/delete', {'id': postId});
+
+  /// [kind] is 'post' or 'comment'.
+  Future<Map<String, dynamic>> report({
+    required String kind,
+    required String id,
+    required String reason,
+  }) => _write('/api/w/report', {'kind': kind, 'id': id, 'reason': reason});
+
+  /// Members, without anyone blocked on this device.
+  Future<List<Map<String, dynamic>>> members() async {
+    final result = await get('/api/members');
+    await blocks.ensureLoaded();
+    return (result['members'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .where((m) => !blocks.isBlocked('${m['handle']}'))
+            .toList() ??
+        [];
+  }
+
+  /// Conversations, without anyone blocked on this device.
+  Future<List<Map<String, dynamic>>> dmThreads() async {
+    final result = await get('/api/dm/threads');
+    await blocks.ensureLoaded();
+    return (result['threads'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .where((t) => !blocks.isBlocked('${t['peer']}'))
+            .toList() ??
+        [];
+  }
+
+  Future<List<Map<String, dynamic>>> dmWith(String handle) async {
+    final result = await get(
+      Uri(path: '/api/dm/with', queryParameters: {'h': handle}).toString(),
+    );
+    return (result['messages'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .toList() ??
+        [];
+  }
+
+  Future<Map<String, dynamic>> sendDm({
+    required String to,
+    required String body,
+  }) => _write('/api/w/dm', {'to': to, 'body': body});
+
+  /// Deletes this device's forum membership (the forum's /api/w/leave): the
+  /// membership, messages and profile picture go; posts stay as "deleted
+  /// member". Returns 'left', 'not_member' (never joined from here) or
+  /// 'unsupported' (the forum server is too old). Throws if the forum refuses.
+  Future<String> leaveForum() async {
+    await _loadKey();
+    if (_key == null) return 'not_member';
+    final session = await loadSession();
+    if (session['handle'] == null) {
+      await _forgetKey();
+      return 'not_member';
+    }
+    final features = session['features'];
+    if (features is! Map || features['leave'] != true) return 'unsupported';
+    final result = await get(
+      Uri(
+        path: '/api/w/leave',
+        queryParameters: {'confirm': 'delete', 't': '${session['token']}'},
+      ).toString(),
+    );
+    if (result['ok'] != true) {
+      throw StateError('The forum did not confirm leaving');
+    }
+    await _forgetKey();
+    return 'left';
+  }
+
+  Future<void> _forgetKey() async {
+    await _keyStorage.delete(key: _keyName);
+    _key = null;
+    _session = null;
+  }
 
   Future<Map<String, dynamic>> _write(
     String path,
